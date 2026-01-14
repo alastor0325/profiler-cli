@@ -990,9 +990,8 @@ const colors = {
   reset: '\x1b[0m',
   cyan: '\x1b[36m',      // Source lines
   yellow: '\x1b[33m',    // Medium hotspots
-  red: '\x1b[31m',       // High hotspots
+  magenta: '\x1b[35m',   // High hotspots
   gray: '\x1b[90m',      // Assembly (subtle)
-  bold: '\x1b[1m',
 };
 
 function colorize(text: string, color: string, enabled: boolean): string {
@@ -1002,8 +1001,8 @@ function colorize(text: string, color: string, enabled: boolean): string {
 function getHotspotColor(samples: number, maxSamples: number, enabled: boolean): string {
   if (!enabled) return '';
   const ratio = samples / maxSamples;
-  if (ratio > 0.1) return colors.red + colors.bold;    // Hot (>10% of max)
-  if (ratio > 0.02) return colors.yellow;              // Warm (>2% of max)
+  if (ratio > 0.1) return colors.magenta;    // Hot (>10% of max)
+  if (ratio > 0.02) return colors.yellow;    // Warm (>2% of max)
   return '';
 }
 
