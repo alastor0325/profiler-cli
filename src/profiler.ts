@@ -1503,12 +1503,71 @@ export async function annotateFunction(
           console.log("Source loaded via native symbol!\n");
 
           // Get source with line timings
-          const sourceData = await page.evaluate(() => {
+          // Manually count samples from frame table for accurate counts
+          const groups = (nativeSymbolInfo as any).groups || [];
+          const nativeSymbolIndices = await page.evaluate(({ groups }: any) => {
+            const state = window.getState();
+            const thread = window.selectors.selectedThread.getThread(state);
+            const { nativeSymbols } = thread;
+
+            const indices: number[] = [];
+            for (const group of groups) {
+              for (const nativeSym of group.nativeSymbols) {
+                for (let i = 0; i < nativeSymbols.length; i++) {
+                  if (nativeSymbols.address[i] === nativeSym.address &&
+                      nativeSymbols.libIndex[i] === nativeSym.libIndex) {
+                    indices.push(i);
+                    break;
+                  }
+                }
+              }
+            }
+            return indices;
+          }, { groups });
+
+          const sourceData = await page.evaluate(({ nativeSymbolIndices }: any) => {
             const state = window.getState();
             const sourceViewCode = window.selectors.code.getSourceViewCode(state);
-            const lineTimings = window.selectors.selectedThread.getSourceViewLineTimings(state);
-            const selfHits = lineTimings.selfLineHits || new Map();
-            const totalHits = lineTimings.totalLineHits || new Map();
+            const thread = window.selectors.selectedThread.getThread(state);
+            const { samples, stackTable, frameTable } = thread;
+
+            const lineSelfHits = new Map<number, number>();
+            const lineTotalHits = new Map<number, number>();
+            const nativeSymbolSet = new Set(nativeSymbolIndices);
+            let totalFunctionSelfSamples = 0;
+            let samplesWithLineInfo = 0;
+
+            for (let sampleIdx = 0; sampleIdx < samples.length; sampleIdx++) {
+              let stackIdx = samples.stack[sampleIdx];
+              if (stackIdx === null) continue;
+
+              const leafFrameIdx = stackTable.frame[stackIdx];
+              const leafNativeSymbol = frameTable.nativeSymbol ? frameTable.nativeSymbol[leafFrameIdx] : null;
+              const isLeafInFunction = leafNativeSymbol !== null && nativeSymbolSet.has(leafNativeSymbol);
+
+              if (isLeafInFunction) {
+                totalFunctionSelfSamples++;
+                const leafLineNumber = frameTable.line ? frameTable.line[leafFrameIdx] : null;
+                if (leafLineNumber !== null) {
+                  lineSelfHits.set(leafLineNumber, (lineSelfHits.get(leafLineNumber) || 0) + 1);
+                  samplesWithLineInfo++;
+                }
+              }
+
+              while (stackIdx !== null) {
+                const frameIdx = stackTable.frame[stackIdx];
+                const frameNativeSymbol = frameTable.nativeSymbol ? frameTable.nativeSymbol[frameIdx] : null;
+
+                if (frameNativeSymbol !== null && nativeSymbolSet.has(frameNativeSymbol)) {
+                  const lineNumber = frameTable.line ? frameTable.line[frameIdx] : null;
+                  if (lineNumber !== null) {
+                    lineTotalHits.set(lineNumber, (lineTotalHits.get(lineNumber) || 0) + 1);
+                  }
+                }
+
+                stackIdx = stackTable.prefix[stackIdx];
+              }
+            }
 
             const lines = sourceViewCode.code.split('\n');
             const linesWithSamples = lines.map((text: string, index: number) => {
@@ -1516,27 +1575,23 @@ export async function annotateFunction(
               return {
                 lineNumber,
                 text,
-                selfSamples: selfHits.get(lineNumber) || 0,
-                totalSamples: totalHits.get(lineNumber) || 0
+                selfSamples: lineSelfHits.get(lineNumber) || 0,
+                totalSamples: lineTotalHits.get(lineNumber) || 0
               };
             });
-
-            let totalSampleCount = 0;
-            for (const count of selfHits.values()) {
-              totalSampleCount += count;
-            }
 
             return {
               success: true,
               lines: linesWithSamples,
               totalLines: lines.length,
-              totalSamples: totalSampleCount
+              totalFunctionSelfSamples,
+              samplesWithLineInfo
             };
-          });
+          }, { nativeSymbolIndices });
 
           // Continue with the normal source processing flow
           if ((sourceData as any).success) {
-            const { lines, totalLines, totalSamples } = sourceData as any;
+            const { lines, totalLines, totalFunctionSelfSamples, samplesWithLineInfo } = sourceData as any;
 
             // Extract function start line and filter
             const lineMatch = functionName.match(/:(\d+):\d+\)?$/);
@@ -1567,7 +1622,8 @@ export async function annotateFunction(
             }
 
             if (mode === 'src') {
-              console.log(`Source code (${relevantLines.length} lines, ${totalSamples} samples):\n`);
+              console.log(`Source code (${relevantLines.length} lines):`);
+              console.log(`  ${samplesWithLineInfo} of ${totalFunctionSelfSamples} samples have line number information\n`);
               const headerLine = "Line".padEnd(10);
               console.log(`${headerLine}    Self   Total`);
               console.log("─".repeat(80));
@@ -1948,25 +2004,77 @@ export async function annotateFunction(
       // Wait and check if source loads
       await new Promise((resolve) => setTimeout(resolve, 3000));
 
-      const sourceData = await page.evaluate(() => {
+      // Get native symbol indices for manual sample counting
+      const nativeSymbolIndices = nativeSymbolInfo && !(nativeSymbolInfo as any).error ?
+        await page.evaluate(({ groups }: any) => {
+          const state = window.getState();
+          const thread = window.selectors.selectedThread.getThread(state);
+          const { nativeSymbols } = thread;
+
+          const indices: number[] = [];
+          for (const group of groups) {
+            for (const nativeSym of group.nativeSymbols) {
+              for (let i = 0; i < nativeSymbols.length; i++) {
+                if (nativeSymbols.address[i] === nativeSym.address &&
+                    nativeSymbols.libIndex[i] === nativeSym.libIndex) {
+                  indices.push(i);
+                  break;
+                }
+              }
+            }
+          }
+          return indices;
+        }, { groups: (nativeSymbolInfo as any).groups || [] }) : [];
+
+      const sourceData = await page.evaluate(({ nativeSymbolIndices }: any) => {
         const state = window.getState();
         const sourceViewCode = window.selectors.code.getSourceViewCode(state);
         const sourceCodeCache = window.selectors.code.getSourceCodeCache(state);
 
         if (sourceViewCode && sourceViewCode.type === 'AVAILABLE') {
-          // Get line timings
-          const lineTimings = window.selectors.selectedThread.getSourceViewLineTimings(state);
-          const selfHits = lineTimings.selfLineHits || new Map();
-          const totalHits = lineTimings.totalLineHits || new Map();
-
-          // Debug: check what file the source view is showing
           const sourceViewState = state.sourceView;
           const sourceFile = sourceViewState?.file || 'unknown';
 
-          // Debug: sample what's in the maps
-          const debugSelfKeys = Array.from(selfHits.keys()).slice(0, 10);
-          const debugSelfValues = Array.from(selfHits.values()).slice(0, 10);
-          const debugTotalKeys = Array.from(totalHits.keys()).slice(0, 10);
+          const thread = window.selectors.selectedThread.getThread(state);
+          const { samples, stackTable, frameTable } = thread;
+
+          const lineSelfHits = new Map<number, number>();
+          const lineTotalHits = new Map<number, number>();
+          const nativeSymbolSet = new Set(nativeSymbolIndices);
+          let totalFunctionSelfSamples = 0;
+          let samplesWithLineInfo = 0;
+
+          for (let sampleIdx = 0; sampleIdx < samples.length; sampleIdx++) {
+            let stackIdx = samples.stack[sampleIdx];
+            if (stackIdx === null) continue;
+
+            const leafFrameIdx = stackTable.frame[stackIdx];
+            const leafNativeSymbol = frameTable.nativeSymbol ? frameTable.nativeSymbol[leafFrameIdx] : null;
+            const isLeafInFunction = leafNativeSymbol !== null && nativeSymbolSet.has(leafNativeSymbol);
+
+            if (isLeafInFunction) {
+              totalFunctionSelfSamples++;
+              const leafLineNumber = frameTable.line ? frameTable.line[leafFrameIdx] : null;
+              if (leafLineNumber !== null) {
+                lineSelfHits.set(leafLineNumber, (lineSelfHits.get(leafLineNumber) || 0) + 1);
+                samplesWithLineInfo++;
+              }
+            }
+
+            while (stackIdx !== null) {
+              const frameIdx = stackTable.frame[stackIdx];
+              const frameNativeSymbol = frameTable.nativeSymbol ? frameTable.nativeSymbol[frameIdx] : null;
+
+              if (frameNativeSymbol !== null && nativeSymbolSet.has(frameNativeSymbol)) {
+                const lineNumber = frameTable.line ? frameTable.line[frameIdx] : null;
+                if (lineNumber !== null) {
+                  lineTotalHits.set(lineNumber, (lineTotalHits.get(lineNumber) || 0) + 1);
+                }
+              }
+
+              stackIdx = stackTable.prefix[stackIdx];
+            }
+          }
 
           const lines = sourceViewCode.code.split('\n');
           const linesWithSamples = lines.map((text: string, index: number) => {
@@ -1974,33 +2082,18 @@ export async function annotateFunction(
             return {
               lineNumber,
               text,
-              selfSamples: selfHits.get(lineNumber) || 0,
-              totalSamples: totalHits.get(lineNumber) || 0
+              selfSamples: lineSelfHits.get(lineNumber) || 0,
+              totalSamples: lineTotalHits.get(lineNumber) || 0
             };
           });
-
-          let totalSampleCount = 0;
-          for (const count of selfHits.values()) {
-            totalSampleCount += count;
-          }
-
-          // Debug: check how many samples actually have line numbers
-          const samplesWithLines = linesWithSamples.filter((l: any) => l.selfSamples > 0 || l.totalSamples > 0).length;
 
           return {
             success: true,
             lines: linesWithSamples,
             totalLines: lines.length,
-            totalSamples: totalSampleCount,
-            sourceFile,
-            debug: {
-              selfHitsSize: selfHits.size,
-              totalHitsSize: totalHits.size,
-              samplesWithLines,
-              debugSelfKeys,
-              debugSelfValues,
-              debugTotalKeys
-            }
+            totalFunctionSelfSamples,
+            samplesWithLineInfo,
+            sourceFile
           };
         }
 
@@ -2010,19 +2103,13 @@ export async function annotateFunction(
           sourceViewType: sourceViewCode?.type || null,
           cacheSize: sourceCodeCache.size
         };
-      });
+      }, { nativeSymbolIndices });
 
       if ((sourceData as any).success) {
-        const { lines, totalLines, totalSamples, sourceFile, debug } = sourceData as any;
+        const { lines, totalLines, totalFunctionSelfSamples, samplesWithLineInfo, sourceFile } = sourceData as any;
 
         console.log(`Source file: ${sourceFile}`);
-
-        if (debug) {
-          console.log(`Debug: selfHits has ${debug.selfHitsSize} entries, totalHits has ${debug.totalHitsSize} entries`);
-          console.log(`Debug: selfHits keys: ${JSON.stringify(debug.debugSelfKeys)}`);
-          console.log(`Debug: selfHits values: ${JSON.stringify(debug.debugSelfValues)}`);
-          console.log();
-        }
+        console.log();
 
         // Extract function start line from function name
         // SpiderMonkey format: "Ion: funcName (/path/file.js:35:41)"
@@ -2164,11 +2251,11 @@ export async function annotateFunction(
           const linesWithSamples = relevantLines.filter((l: any) => l.selfSamples > 0).length;
 
           console.log(`Source code (${relevantLines.length} lines):`);
-          console.log(`  ${actualSamplesOnLines} samples mapped to specific lines`);
-          if (totalSamples > actualSamplesOnLines) {
-            console.log(`  ${totalSamples - actualSamplesOnLines} samples without line info\n`);
-          } else {
+          if (totalFunctionSelfSamples > 0) {
+            console.log(`  ${samplesWithLineInfo} of ${totalFunctionSelfSamples} samples have line number information`);
             console.log();
+          } else {
+            console.log(`  ${actualSamplesOnLines} samples mapped to specific lines\n`);
           }
 
           const headerLine = "Line".padEnd(10);
@@ -2194,9 +2281,58 @@ export async function annotateFunction(
 
           for (const group of groups) {
             if (group.assemblyInstructions) {
+              // Populate source line numbers on assembly instructions if not already present
+              const needsLineMappings = group.assemblyInstructions[0].sourceLineNumber === undefined;
+              if (needsLineMappings && nativeSymbolIndices.length > 0) {
+                const addressToLineMap = await page.evaluate(({ nativeSymbolIndices }: any) => {
+                  const state = window.getState();
+                  const thread = window.selectors.selectedThread.getThread(state);
+                  const { samples, stackTable, frameTable } = thread;
+                  const nativeSymbolSet = new Set(nativeSymbolIndices);
+
+                  const mapping: Record<number, number> = {};
+
+                  for (let sampleIdx = 0; sampleIdx < samples.length; sampleIdx++) {
+                    let stackIdx = samples.stack[sampleIdx];
+                    while (stackIdx !== null) {
+                      const frameIdx = stackTable.frame[stackIdx];
+                      const frameNativeSymbol = frameTable.nativeSymbol ? frameTable.nativeSymbol[frameIdx] : null;
+
+                      if (frameNativeSymbol !== null && nativeSymbolSet.has(frameNativeSymbol)) {
+                        const address = frameTable.address ? frameTable.address[frameIdx] : null;
+                        const lineNumber = frameTable.line ? frameTable.line[frameIdx] : null;
+
+                        if (address !== null && lineNumber !== null) {
+                          mapping[address] = lineNumber;
+                        }
+                      }
+
+                      stackIdx = stackTable.prefix[stackIdx];
+                    }
+                  }
+
+                  return mapping;
+                }, { nativeSymbolIndices });
+
+                for (const inst of group.assemblyInstructions) {
+                  inst.sourceLineNumber = addressToLineMap[inst.address] || null;
+                }
+              }
+
+              // Check if interleaving is possible
+              const instructionsWithLineNumbers = group.assemblyInstructions.filter((i: any) => i.sourceLineNumber !== null);
+              const canInterleave = instructionsWithLineNumbers.length > 0;
+
               console.log(`\n${"═".repeat(80)}`);
-              console.log("Interleaved Source and Assembly");
+              console.log("Source and Assembly");
               console.log(`${"═".repeat(80)}\n`);
+
+              if (!canInterleave) {
+                console.log(`Assembly: ${group.assemblyInstructions.length} instructions`);
+                console.log(`Source: ${relevantLines.length} lines`);
+                console.log(`\nWarning: No assembly-to-source line mappings found in the profile.`);
+                console.log(`Interleaving is not available. Showing assembly only:\n`);
+              }
 
               // Build map of line number -> source text for quick lookup
               const sourceLineMap = new Map<number, any>();
