@@ -63,6 +63,11 @@ const argv = (await yargsInstance
     type: "string",
     choices: ["asm", "src", "all"],
   })
+  .option("color", {
+    describe: "Enable color coding: source lines in cyan, hotspots (high sample counts) in yellow/red",
+    type: "boolean",
+    default: false,
+  })
   .help().argv) as any;
 
 if (argv.ai) {
@@ -741,7 +746,7 @@ try {
     }
   } else if (argv.annotate) {
     const functionName = argv._[1] as string;
-    await annotateFunction(browser, actualProfileUrl, functionName, argv.annotate as 'asm' | 'src' | 'all');
+    await annotateFunction(browser, actualProfileUrl, functionName, argv.annotate as 'asm' | 'src' | 'all', argv.color);
   }
 } finally {
   await browser.close();

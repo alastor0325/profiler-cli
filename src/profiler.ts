@@ -985,11 +985,34 @@ async function fetchAssemblyFromSamply(page: any, nativeSym: any): Promise<any> 
   return null;
 }
 
+// ANSI color codes
+const colors = {
+  reset: '\x1b[0m',
+  cyan: '\x1b[36m',      // Source lines
+  yellow: '\x1b[33m',    // Medium hotspots
+  red: '\x1b[31m',       // High hotspots
+  gray: '\x1b[90m',      // Assembly (subtle)
+  bold: '\x1b[1m',
+};
+
+function colorize(text: string, color: string, enabled: boolean): string {
+  return enabled ? `${color}${text}${colors.reset}` : text;
+}
+
+function getHotspotColor(samples: number, maxSamples: number, enabled: boolean): string {
+  if (!enabled) return '';
+  const ratio = samples / maxSamples;
+  if (ratio > 0.1) return colors.red + colors.bold;    // Hot (>10% of max)
+  if (ratio > 0.02) return colors.yellow;              // Warm (>2% of max)
+  return '';
+}
+
 export async function annotateFunction(
   browser: Browser,
   url: string,
   functionName: string,
-  mode: 'asm' | 'src' | 'all'
+  mode: 'asm' | 'src' | 'all',
+  enableColor: boolean = false
 ): Promise<void> {
   const page = await browser.newPage({
     bypassCSP: true,
@@ -1361,12 +1384,22 @@ export async function annotateFunction(
                 const headerAddr = "Address".padEnd(10);
                 console.log(`${headerAddr}    Self   Total`);
                 console.log("─".repeat(80));
+
+                // Calculate max samples for hotspot coloring
+                const maxSamples = Math.max(...instructionsWithSamples.map((i: any) => i.selfSamples || 0));
+
                 for (const inst of instructionsWithSamples) {
                   const addrStr = `0x${inst.address.toString(16).padStart(8, '0')}`;
                   const selfStr = inst.selfSamples > 0 ? inst.selfSamples.toString().padStart(7) : "       ";
                   const totalStr = inst.totalSamples > 0 ? inst.totalSamples.toString().padStart(7) : "       ";
                   const marker = inst.selfSamples > 0 ? "►" : " ";
-                  console.log(`${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}`);
+
+                  // Apply hotspot color for high sample counts, otherwise gray for assembly
+                  const hotspotColor = getHotspotColor(inst.selfSamples, maxSamples, enableColor);
+                  const lineColor = hotspotColor || (enableColor ? colors.gray : '');
+                  const coloredLine = lineColor ? `${lineColor}${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}${colors.reset}` : `${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}`;
+
+                  console.log(coloredLine);
                 }
                 console.log();
               } else {
@@ -1389,12 +1422,21 @@ export async function annotateFunction(
             console.log(`${headerAddr}    Self   Total`);
             console.log("─".repeat(80));
 
+            // Calculate max samples for hotspot coloring
+            const maxSamples = Math.max(...instructions.map((i: any) => i.selfSamples || 0));
+
             for (const inst of instructions) {
               const addrStr = `0x${inst.address.toString(16).padStart(8, '0')}`;
               const selfStr = inst.selfSamples > 0 ? inst.selfSamples.toString().padStart(7) : "       ";
               const totalStr = inst.totalSamples > 0 ? inst.totalSamples.toString().padStart(7) : "       ";
               const marker = inst.selfSamples > 0 ? "►" : " ";
-              console.log(`${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}`);
+
+              // Apply hotspot color for high sample counts, otherwise gray for assembly
+              const hotspotColor = getHotspotColor(inst.selfSamples, maxSamples, enableColor);
+              const lineColor = hotspotColor || (enableColor ? colors.gray : '');
+              const coloredLine = lineColor ? `${lineColor}${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}${colors.reset}` : `${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}`;
+
+              console.log(coloredLine);
             }
 
             console.log();
@@ -1628,12 +1670,21 @@ export async function annotateFunction(
               console.log(`${headerLine}    Self   Total`);
               console.log("─".repeat(80));
 
+              // Calculate max samples for hotspot coloring
+              const maxSamples = Math.max(...relevantLines.map((l: any) => l.selfSamples || 0));
+
               for (const line of relevantLines) {
                 const lineNum = line.lineNumber.toString().padStart(10);
                 const selfStr = line.selfSamples > 0 ? line.selfSamples.toString().padStart(7) : "       ";
                 const totalStr = line.totalSamples > 0 ? line.totalSamples.toString().padStart(7) : "       ";
                 const marker = line.selfSamples > 0 ? "►" : " ";
-                console.log(`${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`);
+
+                // Apply color: cyan for source, hotspot color for high sample counts
+                const hotspotColor = getHotspotColor(line.selfSamples, maxSamples, enableColor);
+                const lineColor = hotspotColor || (enableColor ? colors.cyan : '');
+                const coloredLine = lineColor ? `${lineColor}${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}${colors.reset}` : `${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`;
+
+                console.log(coloredLine);
               }
               console.log();
 
@@ -1655,6 +1706,10 @@ export async function annotateFunction(
                   for (const line of relevantLines) {
                     sourceLineMap.set(line.lineNumber, line);
                   }
+
+                  // Calculate max samples for hotspot coloring (both source and asm)
+                  const maxSourceSamples = Math.max(...relevantLines.map((l: any) => l.selfSamples || 0));
+                  const maxAsmSamples = Math.max(...group.assemblyInstructions.map((i: any) => i.selfSamples || 0));
 
                   const headerLine = "Line/Addr".padEnd(10);
                   console.log(`${headerLine}    Self   Total`);
@@ -1683,7 +1738,13 @@ export async function annotateFunction(
                             const selfStr = line.selfSamples > 0 ? line.selfSamples.toString().padStart(7) : "       ";
                             const totalStr = line.totalSamples > 0 ? line.totalSamples.toString().padStart(7) : "       ";
                             const marker = line.selfSamples > 0 ? "►" : " ";
-                            console.log(`${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`);
+
+                            // Apply color: cyan for source, hotspot color for high sample counts
+                            const hotspotColor = getHotspotColor(line.selfSamples, maxSourceSamples, enableColor);
+                            const lineColor = hotspotColor || (enableColor ? colors.cyan : '');
+                            const coloredLine = lineColor ? `${lineColor}${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}${colors.reset}` : `${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`;
+
+                            console.log(coloredLine);
 
                             lastSourceLineShown = line.lineNumber;
                           }
@@ -1705,7 +1766,13 @@ export async function annotateFunction(
                     const selfStr = inst.selfSamples > 0 ? inst.selfSamples.toString().padStart(7) : "       ";
                     const totalStr = inst.totalSamples > 0 ? inst.totalSamples.toString().padStart(7) : "       ";
                     const marker = inst.selfSamples > 0 ? "►" : " ";
-                    console.log(`${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}`);
+
+                    // Apply hotspot color for high sample counts, otherwise gray for assembly
+                    const hotspotColor = getHotspotColor(inst.selfSamples, maxAsmSamples, enableColor);
+                    const lineColor = hotspotColor || (enableColor ? colors.gray : '');
+                    const coloredLine = lineColor ? `${lineColor}${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}${colors.reset}` : `${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}`;
+
+                    console.log(coloredLine);
                   }
 
                   const hasRemainingSource = relevantLines.some((l: any) => l.lineNumber > lastSourceLineShown);
@@ -1717,7 +1784,13 @@ export async function annotateFunction(
                         const selfStr = line.selfSamples > 0 ? line.selfSamples.toString().padStart(7) : "       ";
                         const totalStr = line.totalSamples > 0 ? line.totalSamples.toString().padStart(7) : "       ";
                         const marker = line.selfSamples > 0 ? "►" : " ";
-                        console.log(`${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`);
+
+                        // Apply color: cyan for source, hotspot color for high sample counts
+                        const hotspotColor = getHotspotColor(line.selfSamples, maxSourceSamples, enableColor);
+                        const lineColor = hotspotColor || (enableColor ? colors.cyan : '');
+                        const coloredLine = lineColor ? `${lineColor}${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}${colors.reset}` : `${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`;
+
+                        console.log(coloredLine);
                       }
                     }
                   }
@@ -1879,6 +1952,10 @@ export async function annotateFunction(
                   sourceLineMap.set(line.lineNumber, line);
                 }
 
+                // Calculate max samples for hotspot coloring (both source and asm)
+                const maxSourceSamples = Math.max(...relevantLines.map((l: any) => l.selfSamples || 0));
+                const maxAsmSamples = Math.max(...group.assemblyInstructions.map((i: any) => i.selfSamples || 0));
+
                 // Header row
                 const headerLine = "Line/Addr".padEnd(10);
                 console.log(`${headerLine}    Self   Total`);
@@ -1913,7 +1990,13 @@ export async function annotateFunction(
                           const selfStr = line.selfSamples > 0 ? line.selfSamples.toString().padStart(7) : "       ";
                           const totalStr = line.totalSamples > 0 ? line.totalSamples.toString().padStart(7) : "       ";
                           const marker = line.selfSamples > 0 ? "►" : " ";
-                          console.log(`${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`);
+
+                          // Apply color: cyan for source, hotspot color for high sample counts
+                          const hotspotColor = getHotspotColor(line.selfSamples, maxSourceSamples, enableColor);
+                          const lineColor = hotspotColor || (enableColor ? colors.cyan : '');
+                          const coloredLine = lineColor ? `${lineColor}${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}${colors.reset}` : `${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`;
+
+                          console.log(coloredLine);
 
                           lastSourceLineShown = line.lineNumber;
                         }
@@ -1937,7 +2020,13 @@ export async function annotateFunction(
                   const selfStr = inst.selfSamples > 0 ? inst.selfSamples.toString().padStart(7) : "       ";
                   const totalStr = inst.totalSamples > 0 ? inst.totalSamples.toString().padStart(7) : "       ";
                   const marker = inst.selfSamples > 0 ? "►" : " ";
-                  console.log(`${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}`);
+
+                  // Apply hotspot color for high sample counts, otherwise gray for assembly
+                  const hotspotColor = getHotspotColor(inst.selfSamples, maxAsmSamples, enableColor);
+                  const lineColor = hotspotColor || (enableColor ? colors.gray : '');
+                  const coloredLine = lineColor ? `${lineColor}${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}${colors.reset}` : `${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}`;
+
+                  console.log(coloredLine);
                 }
 
                 // Show any remaining source lines
@@ -1950,7 +2039,13 @@ export async function annotateFunction(
                       const selfStr = line.selfSamples > 0 ? line.selfSamples.toString().padStart(7) : "       ";
                       const totalStr = line.totalSamples > 0 ? line.totalSamples.toString().padStart(7) : "       ";
                       const marker = line.selfSamples > 0 ? "►" : " ";
-                      console.log(`${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`);
+
+                      // Apply color: cyan for source, hotspot color for high sample counts
+                      const hotspotColor = getHotspotColor(line.selfSamples, maxSourceSamples, enableColor);
+                      const lineColor = hotspotColor || (enableColor ? colors.cyan : '');
+                      const coloredLine = lineColor ? `${lineColor}${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}${colors.reset}` : `${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`;
+
+                      console.log(coloredLine);
                     }
                   }
                 }
@@ -2262,12 +2357,21 @@ export async function annotateFunction(
           console.log(`${headerLine}    Self   Total`);
           console.log("─".repeat(80));
 
+          // Calculate max samples for hotspot coloring
+          const maxSamples = Math.max(...relevantLines.map((l: any) => l.selfSamples || 0));
+
           for (const line of relevantLines) {
             const lineNum = line.lineNumber.toString().padStart(10);
             const selfStr = line.selfSamples > 0 ? line.selfSamples.toString().padStart(7) : "       ";
             const totalStr = line.totalSamples > 0 ? line.totalSamples.toString().padStart(7) : "       ";
             const marker = line.selfSamples > 0 ? "►" : " ";
-            console.log(`${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`);
+
+            // Apply color: cyan for source, hotspot color for high sample counts
+            const hotspotColor = getHotspotColor(line.selfSamples, maxSamples, enableColor);
+            const lineColor = hotspotColor || (enableColor ? colors.cyan : '');
+            const coloredLine = lineColor ? `${lineColor}${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}${colors.reset}` : `${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`;
+
+            console.log(coloredLine);
           }
           console.log();
 
@@ -2340,6 +2444,10 @@ export async function annotateFunction(
                 sourceLineMap.set(line.lineNumber, line);
               }
 
+              // Calculate max samples for hotspot coloring (both source and asm)
+              const maxSourceSamples = Math.max(...relevantLines.map((l: any) => l.selfSamples || 0));
+              const maxAsmSamples = Math.max(...group.assemblyInstructions.map((i: any) => i.selfSamples || 0));
+
               // Header row
               const headerLine = "Line/Addr".padEnd(10);
               console.log(`${headerLine}    Self   Total`);
@@ -2374,7 +2482,13 @@ export async function annotateFunction(
                         const selfStr = line.selfSamples > 0 ? line.selfSamples.toString().padStart(7) : "       ";
                         const totalStr = line.totalSamples > 0 ? line.totalSamples.toString().padStart(7) : "       ";
                         const marker = line.selfSamples > 0 ? "►" : " ";
-                        console.log(`${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`);
+
+                        // Apply color: cyan for source, hotspot color for high sample counts
+                        const hotspotColor = getHotspotColor(line.selfSamples, maxSourceSamples, enableColor);
+                        const lineColor = hotspotColor || (enableColor ? colors.cyan : '');
+                        const coloredLine = lineColor ? `${lineColor}${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}${colors.reset}` : `${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`;
+
+                        console.log(coloredLine);
 
                         lastSourceLineShown = line.lineNumber;
                       }
@@ -2399,7 +2513,13 @@ export async function annotateFunction(
                 const selfStr = inst.selfSamples > 0 ? inst.selfSamples.toString().padStart(7) : "       ";
                 const totalStr = inst.totalSamples > 0 ? inst.totalSamples.toString().padStart(7) : "       ";
                 const marker = inst.selfSamples > 0 ? "►" : " ";
-                console.log(`${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}`);
+
+                // Apply hotspot color for high sample counts, otherwise gray for assembly
+                const hotspotColor = getHotspotColor(inst.selfSamples, maxAsmSamples, enableColor);
+                const lineColor = hotspotColor || (enableColor ? colors.gray : '');
+                const coloredLine = lineColor ? `${lineColor}${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}${colors.reset}` : `${addrStr}  ${selfStr}  ${totalStr}  ${marker} ${inst.instruction}`;
+
+                console.log(coloredLine);
               }
 
               // Show any remaining source lines that weren't encountered
@@ -2412,7 +2532,13 @@ export async function annotateFunction(
                     const selfStr = line.selfSamples > 0 ? line.selfSamples.toString().padStart(7) : "       ";
                     const totalStr = line.totalSamples > 0 ? line.totalSamples.toString().padStart(7) : "       ";
                     const marker = line.selfSamples > 0 ? "►" : " ";
-                    console.log(`${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`);
+
+                    // Apply color: cyan for source, hotspot color for high sample counts
+                    const hotspotColor = getHotspotColor(line.selfSamples, maxSourceSamples, enableColor);
+                    const lineColor = hotspotColor || (enableColor ? colors.cyan : '');
+                    const coloredLine = lineColor ? `${lineColor}${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}${colors.reset}` : `${lineNum}  ${selfStr}  ${totalStr}  ${marker} ${line.text}`;
+
+                    console.log(coloredLine);
                   }
                 }
               }
