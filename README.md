@@ -13,53 +13,117 @@ npm link
 ## Usage
 
 ```bash
-# Show AI-focused documentation
-profiler-cli --ai
-
-# Get top 10 functions by self time
-profiler-cli <profile-url> --calltree 10
-
-# Get detailed call paths for top 5 functions
-profiler-cli <profile-url> --calltree 5 --detailed
-
-# Search for a specific function
-profiler-cli <profile-url> --calltree 10 --focus-function "FunctionName"
-
-# Search with detailed call paths
-profiler-cli <profile-url> --calltree 10 --focus-function "FunctionName" --detailed --max-paths 10
-
-# Show flamegraph tree view
-profiler-cli <profile-url> --flamegraph
-
-# Show flamegraph with limited depth
-profiler-cli <profile-url> --flamegraph 5
-
-# Show flamegraph for specific function
-profiler-cli <profile-url> --flamegraph --focus-function "FunctionName"
-
-# Filter to samples during markers starting with "Jank"
-profiler-cli <profile-url> --calltree 10 --focus-marker "Jank"
-
-# List top 5 markers by total duration and by max duration (default)
-profiler-cli <profile-url> --top-markers
-
-# List top 20 markers by frequency
-profiler-cli <profile-url> --top-markers 20
-
-# Show page load performance summary
-profiler-cli <profile-url> --page-load
+profiler-cli <profile-url-or-file> [options]
 ```
+
+Both Firefox Profiler share URLs and local `.json.gz` profile files are supported.
 
 ## Options
 
-- `--ai`: Show comprehensive AI-focused documentation
-- `--calltree N`: Get top N functions by self time
-- `--focus-function NAME`: Search for a specific function by name (works with --calltree, --flamegraph)
-- `--focus-marker FILTER`: Filter samples to only those within markers matching the filter string
-- `--top-markers [N]`: Show top 5 markers by total duration and by max duration (default), or top N markers by frequency if N is specified
-- `--detailed`: Show detailed call paths for each function
-- `--max-paths N`: Maximum number of call paths to show in detailed mode (default: 5)
-- `--flamegraph [N]`: Show flamegraph-style tree view of call stacks (top-down), optionally limited to N levels deep
-- `--page-load`: Show page load performance summary with key metrics (Load event, First Contentful Paint, Largest Contentful Paint) and resource loading statistics
+### `--calltree N`
+Get the top N functions by self time (time spent in the function itself, excluding callees).
 
-**Note:** When using `--focus-marker` with values starting with `-` (like `-async,-sync`), use equals sign syntax: `--focus-marker="-async,-sync"`
+```bash
+profiler-cli <profile> --calltree 10
+```
+
+### `--detailed`
+Show detailed call paths for each function in `--calltree` output. Each path shows the full call stack leading to the function, sorted by sample count.
+
+```bash
+profiler-cli <profile> --calltree 5 --detailed
+profiler-cli <profile> --calltree 5 --detailed --max-paths 10
+```
+
+### `--max-paths N`
+Maximum number of call paths to show per function in `--detailed` mode (default: 5).
+
+### `--callers-of NAME`
+Show callers of a specific function using an inverted call tree. The function becomes the root and its callers appear as children, letting you see what code paths lead to it.
+
+Matches with C++ generic type parameters stripped, so `servo_arc::Arc::drop_slow` matches `servo_arc::Arc<T>::drop_slow`.
+
+```bash
+profiler-cli <profile> --calltree 10 --callers-of "malloc"
+profiler-cli <profile> --calltree 5 --callers-of "style::properties::cascade::cascade_rules"
+```
+
+### `--collapse-function NAME`
+Collapse a function and its entire subtree into a single node. All time spent in the function and everything it calls is attributed to that node as self time. Useful for removing noise from well-understood functions.
+
+```bash
+profiler-cli <profile> --calltree 10 --focus-marker="-async,-sync" --collapse-function "servo_arc::Arc::drop_slow"
+```
+
+### `--focus-function NAME`
+Collapse the function's subtree (like `--collapse-function`) and then focus exclusively on that single node. With `--detailed`, shows the full caller chains leading up to the function.
+
+Useful for understanding all the code paths that call into a particular function and how much time each contributes.
+
+```bash
+# Show the function as a single collapsed node
+profiler-cli <profile> --calltree 5 --focus-function "servo_arc::Arc::drop_slow"
+
+# Show full caller chains (what calls this function and from where)
+profiler-cli <profile> --calltree 5 --focus-function "servo_arc::Arc::drop_slow" --detailed
+```
+
+### `--focus-marker FILTER`
+Filter samples to only include those within markers whose name matches the filter string. Multiple comma-separated patterns are supported.
+
+**Note:** When the filter value starts with `-`, use the equals sign syntax to avoid it being interpreted as a flag.
+
+```bash
+profiler-cli <profile> --calltree 10 --focus-marker "Jank"
+profiler-cli <profile> --calltree 10 --focus-marker="-async,-sync"
+```
+
+For Speedometer profiles, always use `--focus-marker="-async,-sync"` to exclude async idle time between iterations.
+
+### `--flamegraph [N]`
+Show a top-down flamegraph-style tree view of call stacks. Optionally limit the output to N levels deep.
+
+```bash
+profiler-cli <profile> --flamegraph
+profiler-cli <profile> --flamegraph 5
+```
+
+### `--top-markers [N]`
+Show the top 5 markers by total duration and by max single-instance duration. If N is specified, shows the top N markers.
+
+```bash
+profiler-cli <profile> --top-markers
+profiler-cli <profile> --top-markers 20
+```
+
+### `--page-load`
+Show a page load performance summary including navigation timing (FCP, Load), resource loading statistics, CPU category breakdown, and jank period analysis.
+
+```bash
+profiler-cli <profile> --page-load
+```
+
+### `--network`
+Show detailed network resource timing with per-resource phase breakdown (DNS, TCP, TLS, request, response, main thread wait).
+
+```bash
+profiler-cli <profile> --network
+```
+
+### `--annotate <asm|src|all> FUNCTION`
+Annotate a function with assembly, source code, or both, with per-line sample counts. Requires a local profile file.
+
+```bash
+profiler-cli profile.json.gz --annotate asm "FunctionName"
+profiler-cli profile.json.gz --annotate src "FunctionName"
+profiler-cli profile.json.gz --annotate all "FunctionName"
+```
+
+### `--color`
+Enable color coding in `--annotate` output: source lines in cyan, hotspot lines in yellow/magenta.
+
+### `--samply-path PATH`
+Path to the `samply` binary (default: use `samply` from PATH). Used when serving local profile files.
+
+### `--ai`
+Show comprehensive AI-focused documentation for all options and common analysis patterns.

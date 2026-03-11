@@ -14,211 +14,332 @@ if (argv.ai) {
 # profiler-cli: AI Usage Guide
 
 ## Purpose
-Extract performance data from Firefox Profiler URLs to analyze browser performance bottlenecks.
+Extract performance data from Firefox Profiler profiles to analyze browser performance bottlenecks.
+Both Firefox Profiler share URLs and local .json.gz profile files are supported.
 
-## Core Commands
+## Options Reference
 
-### 1. Get Top Functions by Self Time
-\`\`\`bash
-profiler-cli <profile-url> --calltree N
-\`\`\`
+### --calltree N
 Returns the top N functions sorted by self time (time spent in the function itself, excluding callees).
+This uses an inverted call tree internally, so each root node is a leaf function with high self time.
 
-**Example:**
 \`\`\`bash
-profiler-cli <profile-url> --calltree 10
+profiler-cli <profile> --calltree 10
 \`\`\`
 
-### 2. Flamegraph Tree View
+Output:
+  Collected 2197 total nodes
+  Top 10 functions by self time:
+  1. __psynch_cvwait - 12641 samples (12641 total)
+  2. free - 195 samples (195 total)
+  ...
+
+### --detailed
+Adds full call stack paths to each function in --calltree output. Each path shows the complete
+call chain from the function up to the root, with sample counts and percentages. Use --max-paths
+to control how many paths are shown per function (default: 5).
+
 \`\`\`bash
-profiler-cli <profile-url> --flamegraph [N]
-\`\`\`
-Shows a top-down tree view of call stacks with visual hierarchy. Optionally limit depth to N levels.
-
-**Use when:** You want to see the call tree structure and understand caller-callee relationships.
-
-**Example:**
-\`\`\`bash
-profiler-cli <profile-url> --flamegraph 5
-\`\`\`
-
-### 3. Focus on Specific Function or Marker
-\`\`\`bash
-profiler-cli <profile-url> --calltree 10 --focus-function "FunctionName"
-profiler-cli <profile-url> --flamegraph --focus-marker "Jank"
-\`\`\`
-Applies profiler transforms to focus analysis on specific functions or time periods.
-
-**Use when:** You want to analyze what happens during specific operations or within specific functions.
-
-**Examples:**
-\`\`\`bash
-# Focus on malloc and see what calls it
-profiler-cli <profile-url> --calltree 10 --focus-function "malloc"
-
-# See what happens during Jank markers
-profiler-cli <profile-url> --flamegraph --focus-marker "Jank"
-
-# Combine both
-profiler-cli <profile-url> --calltree 10 --focus-function "malloc" --focus-marker "Rasterize"
+profiler-cli <profile> --calltree 5 --detailed
+profiler-cli <profile> --calltree 5 --detailed --max-paths 10
 \`\`\`
 
-### 4. Top Markers Analysis
+Output (per function):
+  1. free - 195 samples (195 total)
+
+     Call path #1 - 9 samples (4.6% of this function):
+       free
+       nsPurpleBuffer::VisitEntries<SnowWhiteKiller>(SnowWhiteKiller&)
+       nsCycleCollector::FreeSnowWhiteWithBudget(JS::SliceBudget&)
+       ...
+       start
+
+     [167 more call paths, accounting for 173 samples]
+
+### --callers-of NAME
+Shows callers of a specific function using a focused inverted call tree. The named function becomes
+the root and its callers appear as its children, recursively showing the full call graph that leads
+to this function. Use this to answer "what calls X?" and "how much of X's time comes from each caller?".
+
+Function name matching strips C++ generic type parameters, so "servo_arc::Arc::drop_slow" will match
+"servo_arc::Arc<T>::drop_slow". Also strips parameter lists when the query has none.
+
 \`\`\`bash
-profiler-cli <profile-url> --top-markers [N]
+profiler-cli <profile> --calltree 10 --callers-of "malloc"
+profiler-cli <profile> --calltree 5 --callers-of "style::properties::cascade::cascade_rules"
+profiler-cli <profile> --calltree 5 --callers-of "malloc" --focus-marker="-async,-sync"
 \`\`\`
-Shows top 5 markers by total duration and max duration (default), or top N by frequency.
 
-**Use when:** You want to understand which operations are taking the most time.
+Output:
+  Collected 130 total nodes
+  Top 5 functions by self time (callers-of: "style::properties::cascade::cascade_rules"):
+  1. style::properties::cascade::cascade_rules - 105 samples (105 total)
+  2. style::properties::generated::StyleBuilder::build - 59 samples (59 total)
+  ...
 
-**Examples:**
+### --collapse-function NAME
+Collapses a function and its entire subtree into a single leaf node. All time spent inside
+that function and anything it calls becomes self time on that one node. Useful for suppressing
+noise from well-understood or irrelevant functions so they don't dominate the call tree.
+
 \`\`\`bash
-# Default: top 5 by total and max duration
-profiler-cli <profile-url> --top-markers
-
-# Top 20 by frequency
-profiler-cli <profile-url> --top-markers 20
+profiler-cli <profile> --calltree 10 --collapse-function "servo_arc::Arc::drop_slow"
+profiler-cli <profile> --calltree 5 --focus-marker="-async,-sync" --collapse-function "servo_arc::Arc::drop_slow"
 \`\`\`
 
-### 5. Page Load Analysis
+Output shows the collapsed function with all its subtree's samples merged into its self time:
+  1. servo_arc::Arc<T>::drop_slow - 127 samples (127 total)   <- was previously spread across many children
+
+### --focus-function NAME
+Combines --collapse-function with an exclusive focus on that single node. The function's subtree
+is collapsed, and then only that function appears in the output (1 total node). With --detailed,
+shows the full caller chains leading up to that function, revealing all the code paths that call it
+and how many samples each contributes.
+
+Use this to deeply inspect a specific function: first understand how much total time it takes
+(with the subtree collapsed), then understand who calls it and from what context (with --detailed).
+
 \`\`\`bash
-profiler-cli <profile-url> --page-load
+# Show the function as a single collapsed node with total self time
+profiler-cli <profile> --calltree 5 --focus-function "servo_arc::Arc::drop_slow"
+
+# Add a marker filter to restrict to a time period
+profiler-cli <profile> --calltree 5 --focus-marker="-async,-sync" --focus-function "servo_arc::Arc::drop_slow"
+
+# Show full caller chains with sample counts per path
+profiler-cli <profile> --calltree 5 --focus-function "servo_arc::Arc::drop_slow" --detailed
+
+# Combine all three
+profiler-cli <profile> --calltree 5 --focus-marker="-async,-sync" --focus-function "servo_arc::Arc::drop_slow" --detailed --max-paths 10
 \`\`\`
-Comprehensive page load performance analysis including:
-- Navigation timing (FCP, LCP, Load)
-- Visual timeline
-- Resource loading statistics (164 resources, breakdown by type)
-- Sample category breakdown (CPU time by category)
-- Jank period analysis (identifies blocking tasks with top functions)
 
-**Use when:** Analyzing page load performance and identifying bottlenecks.
+Output (without --detailed):
+  Collected 1 total nodes
+  Top 5 functions by self time (focus: "servo_arc::Arc::drop_slow", marker: "-async,-sync"):
+  1. servo_arc::Arc<T>::drop_slow - 127 samples (127 total)
 
-**Output includes:**
+Output (with --detailed):
+  1. servo_arc::Arc<T>::drop_slow - 127 samples (127 total)
+
+     Call path #1 - 14 samples (11.0% of this function):
+       servo_arc::Arc<T>::drop_slow
+       style::style_resolver::StyleResolverForElement<E>::resolve_style
+       style::parallel::style_trees
+       geckoservo::glue::traverse_subtree
+       ...
+       start
+
+### --focus-marker FILTER
+Filters samples to only those recorded within markers whose name contains the filter string.
+Multiple comma-separated patterns can be specified. Applies before all other analysis.
+
+When the filter value starts with '-', use equals sign syntax to prevent it being parsed as a flag:
+  --focus-marker="-async,-sync"   (correct)
+  --focus-marker "-async,-sync"   (wrong: -async will be parsed as a flag)
+
+\`\`\`bash
+profiler-cli <profile> --calltree 10 --focus-marker "Jank"
+profiler-cli <profile> --calltree 10 --focus-marker="-async,-sync"
+profiler-cli <profile> --calltree 5 --focus-marker="-async,-sync" --callers-of "malloc"
+\`\`\`
+
+For Speedometer profiles, always use --focus-marker="-async,-sync" to exclude the async idle time
+between benchmark iterations and focus only on the synchronous benchmark work.
+
+### --flamegraph [N]
+Shows a top-down flamegraph-style tree view of call stacks. Each node shows its function name,
+percentage of total samples, and sample count. Children are sorted by sample count descending.
+Optionally limit output to N levels deep to reduce noise for large profiles.
+
+\`\`\`bash
+profiler-cli <profile> --flamegraph
+profiler-cli <profile> --flamegraph 5
+profiler-cli <profile> --flamegraph 8 --focus-marker="-async,-sync"
+\`\`\`
+
+Output:
+  Flamegraph (max depth: 5):
+  start (100.0%, 22215 samples)
+  └─ main (100.0%, 22215 samples)
+     └─ XRE_InitChildProcess(...) (100.0%, 22215 samples)
+        ├─ MessageLoop::Run() (99.8%, 22168 samples)
+        │  └─ XRE_RunAppShell() (99.8%, 22168 samples)
+        └─ mozilla::dom::ContentProcess::Init(...) (0.2%, 45 samples)
+
+### --top-markers [N]
+Shows markers sorted by total duration and by max single-instance duration. Default shows top 5
+in each category. Specify N to show top N markers. Useful for identifying which operations take
+the most time overall and which individual instances are the slowest.
+
+\`\`\`bash
+profiler-cli <profile> --top-markers
+profiler-cli <profile> --top-markers 20
+\`\`\`
+
+Output:
+  Total unique markers: 110
+
+  Top 5 markers by total duration:
+  1. suite-NewsSite-Nuxt-prepare - 5209.82 ms total (count: 100, avg: 52.10 ms)
+  ...
+
+  Top 5 markers by max single instance duration:
+  1. iteration-0 - 148.45 ms max (total: 148.45 ms, count: 1)
+  ...
+
+### --page-load
+Comprehensive page load performance summary. Extracts navigation timing events (FCP, Load),
+resource loading statistics with a breakdown by type, CPU time by category, and jank periods
+(long tasks that block the main thread) with the top functions responsible for each jank.
+
+\`\`\`bash
+profiler-cli <profile> --page-load
+\`\`\`
+
+Output includes:
 - URL being loaded
-- FCP, LCP, Load timings with visual timeline
-- Resource count and types (JS: 117, Image: 27, etc.)
-- Top 10 slowest resource loads
-- CPU time breakdown by category (JavaScript: 10.5%, Layout: 9.9%, etc.)
-- Jank periods with top functions causing blocking
+- Visual ASCII timeline showing FCP and Load relative to each other
+- Navigation timing: FCP and Load event times in ms
+- Resource summary: total count, average/max duration, breakdown by type (JS/CSS/Image/Font/Other)
+- Top 10 slowest resources by duration
+- CPU category breakdown: % time in JavaScript, Layout, DOM, GC, Graphics, etc.
+- Jank periods: start time, duration, top functions by sample count, category breakdown
 
-**Example:**
+### --network
+Detailed network resource timing. Shows every network request with its full phase breakdown
+matching the Firefox Profiler network waterfall view. Also shows aggregated timing totals
+across all resources and cache hit/miss statistics.
+
 \`\`\`bash
-profiler-cli <profile-url> --page-load
+profiler-cli <profile> --network
 \`\`\`
 
-### 6. Detailed Network Analysis
+Output includes:
+- Total resource count and cache statistics (Hit/Miss/Unknown percentages)
+- Timing totals: sum of each phase across all resources
+- Per-resource entries sorted by start time relative to Navigation::Start:
+  - URL, HTTP version, cache status, content type, size
+  - Start time and total duration
+  - Per-phase timing breakdown:
+    - Waiting for socket thread
+    - DNS request
+    - After DNS request
+    - TCP connection
+    - After TCP connection
+    - Establishing TLS session
+    - Waiting for HTTP request
+    - HTTP request and waiting for response
+    - HTTP response (download time)
+    - Waiting for main thread
+
+### --annotate <asm|src|all> FUNCTION
+Annotates a specific function with per-line sample counts. Requires a local .json.gz profile file
+(not a URL). Shows assembly (asm), source code (src), or both interleaved (all). Lines with high
+sample counts indicate hot code paths within the function. Use --color to highlight source lines
+and hotspots.
+
 \`\`\`bash
-profiler-cli <profile-url> --network
-\`\`\`
-Shows detailed network resource timing with phase breakdown:
-- Cache statistics (Hit/Miss/Unknown)
-- Accumulated timing totals (DNS, Connect, TLS, Wait, Download)
-- Per-resource timing phases matching the profiler UI
-
-**Use when:** You need to understand network waterfall and identify slow resources.
-
-**Output includes:**
-- Total resources and cache statistics
-- Accumulated time for each network phase
-- Resources sorted by start time (relative to Navigation::Start)
-- Full timing breakdown per resource:
-  - Waiting for socket thread
-  - DNS request
-  - TCP connection
-  - TLS handshake
-  - HTTP request and waiting for response
-  - HTTP response (download)
-  - Waiting for main thread
-
-**Example:**
-\`\`\`bash
-profiler-cli <profile-url> --network
-\`\`\`
-
-### 7. Show Detailed Call Paths
-\`\`\`bash
-profiler-cli <profile-url> --calltree N --detailed --max-paths M
-\`\`\`
-Shows the call stacks that lead to each function.
-
-**Example:**
-\`\`\`bash
-profiler-cli <profile-url> --calltree 5 --detailed --max-paths 3
+profiler-cli profile.json.gz --annotate asm "FunctionName"
+profiler-cli profile.json.gz --annotate src "FunctionName"
+profiler-cli profile.json.gz --annotate all "FunctionName" --color
 \`\`\`
 
 ## Understanding the Output
 
 ### Self Time vs Total Time
-- **Self time**: Samples where the function itself was executing (excluding functions it calls)
-- **Total time**: All samples where the function was on the stack (including its callees)
+- **Self time**: Samples where this function was the top of the stack (actively executing)
+- **Total time**: All samples where this function appeared anywhere on the stack (including callees)
+- Self time is usually more actionable for optimization
 
 ### Samples
 - Profiles are sampled at regular intervals (typically 1ms)
-- Each "sample" represents one snapshot of the call stack
-- Higher sample counts = more time spent
+- Each sample is one snapshot of the call stack
+- Higher sample counts = more CPU time spent
 
-### Call Paths
-When using \`--detailed\`, you see stacks in bottom-up order (root at bottom).
-When using \`--flamegraph\`, you see stacks in top-down order (traditional flamegraph).
+### Call Paths in --detailed mode
+Each call path shows the complete call chain from the function up to the root, ordered
+from the function at the top down to the root at the bottom. The path sample count is the
+number of samples where this exact sequence of callers was on the stack.
 
 ## Common Analysis Patterns
 
-### Pattern 1: Find Page Load Bottlenecks
+### Pattern 1: Find the biggest CPU consumers
 \`\`\`bash
-# Get comprehensive page load analysis
-profiler-cli <url> --page-load
+# Top functions overall
+profiler-cli <profile> --calltree 20
 
-# Then drill into network issues
-profiler-cli <url> --network
+# Top functions during a specific operation
+profiler-cli <profile> --calltree 20 --focus-marker "Jank"
+
+# Top functions during Speedometer benchmark (excluding async idle)
+profiler-cli <profile> --calltree 20 --focus-marker="-async,-sync"
 \`\`\`
 
-### Pattern 2: Analyze Jank/Blocking
+### Pattern 2: Understand who calls a hot function
 \`\`\`bash
-# See what's happening during jank
-profiler-cli <url> --calltree 20 --focus-marker "Jank"
+# See all callers of malloc
+profiler-cli <profile> --calltree 10 --callers-of "malloc"
 
-# Or use page-load to see jank analysis
-profiler-cli <url> --page-load
+# See callers during a specific marker
+profiler-cli <profile> --calltree 10 --callers-of "malloc" --focus-marker="-async,-sync"
+
+# Get detailed caller chains
+profiler-cli <profile> --calltree 10 --callers-of "malloc" --detailed
 \`\`\`
 
-### Pattern 3: Deep Dive on Hot Function
+### Pattern 3: Deep dive on a specific function
 \`\`\`bash
-# Find hot functions
-profiler-cli <url> --calltree 20
+# See total time with subtree collapsed
+profiler-cli <profile> --calltree 5 --focus-function "MyFunction"
 
-# Focus on specific function
-profiler-cli <url> --flamegraph 5 --focus-function "malloc"
+# See all caller chains leading to it
+profiler-cli <profile> --calltree 5 --focus-function "MyFunction" --detailed --max-paths 10
 \`\`\`
 
-### Pattern 4: Understand Call Context
+### Pattern 4: Remove noise and focus on what matters
 \`\`\`bash
-# See call tree structure
-profiler-cli <url> --flamegraph 10
+# Collapse a noisy function and see what else is expensive
+profiler-cli <profile> --calltree 10 --collapse-function "servo_arc::Arc::drop_slow"
 
-# Or get detailed call paths
-profiler-cli <url> --calltree 5 --detailed --max-paths 5
+# Combine collapse + marker filter
+profiler-cli <profile> --calltree 10 --focus-marker="-async,-sync" --collapse-function "servo_arc::Arc::drop_slow"
 \`\`\`
 
-## Profile URL Sources
-- Firefox Profiler: profiler.firefox.com
-- Shared profiles: share.firefox.dev/<profile-id>
-- Local profiles: Use the profiler.firefox.com URL from your browser
+### Pattern 5: Analyze page load performance
+\`\`\`bash
+# Overview: timing, resources, jank
+profiler-cli <profile> --page-load
 
-## Tips for AI Analysis
-1. **Start with --page-load** for page load profiles to get comprehensive overview
-2. **Use --network** to identify slow resources and connection issues
-3. **Self time is more actionable**: Focus on functions with high self time for optimization
-4. **Look for patterns in call paths**: Repeated patterns indicate systematic issues
-5. **Browser internals are normal**: Don't worry about functions like \`__psynch_cvwait\` (system calls)
-6. **JS vs Native**: JavaScript functions show source locations, native functions show C++/Rust names
-7. **Samples are relative**: Compare functions within the same profile, not across profiles
-8. **Jank indicates blocking**: Any jank >50ms will block user interaction
+# Drill into slow network resources
+profiler-cli <profile> --network
+
+# See what CPU work happened during load
+profiler-cli <profile> --calltree 20
+\`\`\`
+
+### Pattern 6: Explore call tree structure
+\`\`\`bash
+# Top-down view of what the program is doing
+profiler-cli <profile> --flamegraph 8
+
+# Restricted to a marker period
+profiler-cli <profile> --flamegraph 8 --focus-marker="-async,-sync"
+\`\`\`
+
+## Tips
+1. **Self time is more actionable**: Functions with high self time are directly consuming CPU
+2. **Use --focus-marker for benchmarks**: Always filter Speedometer profiles with --focus-marker="-async,-sync"
+3. **Generic type parameters are stripped**: You can omit <T>, <U, V>, etc. in function names
+4. **Parameter lists are optional**: "MyFunction" matches "MyFunction(int, char*)" when no '(' in query
+5. **Browser internals are expected**: __psynch_cvwait and similar are normal idle/wait functions
+6. **Jank >50ms blocks interaction**: Any jank period that long will cause a noticeable freeze
+7. **Start broad, then narrow**: Begin with --calltree 20 to find hotspots, then drill in with --callers-of or --focus-function
 
 ## Error Handling
-- If function not found: The function may not appear in the profile at all
-- If profile fails to load: Ensure the URL is a valid Firefox Profiler share URL
-- Timeouts: Large profiles may take 30+ seconds to process
-- When using --focus-marker with values starting with '-', use equals syntax: --focus-marker="-async,-sync"
+- Function not found: The function may not appear in this profile, or check the name spelling
+- Profile fails to load: Ensure the URL is a valid Firefox Profiler share URL or local .json.gz
+- Large profiles may take 30+ seconds to process
+- When using --focus-marker with values starting with '-', always use equals syntax: --focus-marker="-async,-sync"
 `);
   process.exit(0);
 }
