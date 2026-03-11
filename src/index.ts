@@ -1,78 +1,13 @@
 #!/usr/bin/env node
 import { hideBin } from "yargs/helpers";
-import yargs from "yargs/yargs";
 import { chromium, firefox } from "playwright";
 import { getCallTreeData, getMarkerSummary, getFlamegraphData, getPageLoadSummary, getNetworkResources, annotateFunction } from "./profiler.js";
 import { FlameNode } from "./types.js";
 import { existsSync } from 'fs';
 import { spawn } from 'child_process';
+import { buildParser, validateArgs, ParsedArgs } from "./options.js";
 
-const yargsInstance = yargs(hideBin(process.argv));
-const argv = (await yargsInstance
-  .parserConfiguration({
-    "greedy-arrays": false,
-    "short-option-groups": false,
-  })
-  .usage("Extract information from Firefox Profiler profiles.\n\nUsage: $0 <profile-url>\n       $0 --ai (for AI documentation)")
-  .option("calltree", {
-    describe: "Get top N functions by self time",
-    type: "number",
-  })
-  .option("focus-function", {
-    describe: "Search for a specific function by name",
-    type: "string",
-  })
-  .option("focus-marker", {
-    describe: "Filter samples to only include those within markers matching this string (use = syntax for values starting with -)",
-    type: "string",
-  })
-  .option("top-markers", {
-    describe: "Show top 5 markers by total duration and by max duration (default), or top N markers by frequency if N is specified",
-    type: "number",
-  })
-  .option("detailed", {
-    describe: "Show detailed call paths for each function",
-    type: "boolean",
-    default: false,
-  })
-  .option("max-paths", {
-    describe: "Maximum number of call paths to show in detailed mode",
-    type: "number",
-    default: 5,
-  })
-  .option("flamegraph", {
-    describe: "Show flamegraph-style tree view of call stacks (optional: max depth)",
-    type: "number",
-  })
-  .option("page-load", {
-    describe: "Show page load performance summary with key metrics",
-    type: "boolean",
-    default: false,
-  })
-  .option("network", {
-    describe: "Show detailed network resource timing information",
-    type: "boolean",
-    default: false,
-  })
-  .option("ai", {
-    describe: "Show AI-focused documentation",
-    type: "boolean",
-  })
-  .option("annotate", {
-    describe: "Annotate function with assembly (asm), source (src), or both (all). Requires function name as positional argument.",
-    type: "string",
-    choices: ["asm", "src", "all"],
-  })
-  .option("color", {
-    describe: "Enable color coding: source lines in cyan, hotspots (high sample counts) in yellow/red",
-    type: "boolean",
-    default: false,
-  })
-  .option("samply-path", {
-    describe: "Path to samply binary (default: use samply from PATH)",
-    type: "string",
-  })
-  .help().argv) as any;
+const argv = (await buildParser(hideBin(process.argv)).argv) as ParsedArgs;
 
 if (argv.ai) {
   console.log(`
@@ -288,44 +223,15 @@ profiler-cli <url> --calltree 5 --detailed --max-paths 5
   process.exit(0);
 }
 
-if (!argv._[0]) {
-  console.error("Please provide a profile URL");
+const validationError = validateArgs(argv, process.argv);
+if (validationError) {
+  console.error(validationError);
   process.exit(1);
 }
 
 const profileUrl = argv._[0] as string;
-
-// Handle the case where --focus-marker is followed by a value starting with -
-// In this case, yargs may not capture it properly
-if (argv.focusMarker === '' || (argv.focusMarker === undefined && argv._.length > 1 && typeof argv._[1] === 'string' && argv._[1].startsWith('-'))) {
-  console.error("Error: When using --focus-marker with a value starting with '-', use the equals sign syntax:");
-  console.error("  --focus-marker=\"-async,-sync\"");
-  console.error("\nInstead of:");
-  console.error("  --focus-marker \"-async,-sync\"");
-  process.exit(1);
-}
-
 const hasTopMarkersFlag = process.argv.includes('--top-markers');
 const hasFlamegraphFlag = process.argv.includes('--flamegraph');
-
-if (!argv.calltree && !hasTopMarkersFlag && !hasFlamegraphFlag && !argv.pageLoad && !argv.network && !argv.annotate) {
-  console.error("Please specify one of: --calltree <N>, --flamegraph, --top-markers [N], --page-load, --network, or --annotate <asm|src|all> <function-name>");
-  console.error("Note: --focus-function can be used with --calltree or --flamegraph to filter results");
-  process.exit(1);
-}
-
-const optionCount = [argv.calltree, hasTopMarkersFlag, hasFlamegraphFlag, argv.pageLoad, argv.network, argv.annotate].filter(x => x !== undefined && x !== false).length;
-if (optionCount > 1) {
-  console.error("Please specify only one of: --calltree, --flamegraph, --top-markers, --page-load, --network, or --annotate");
-  process.exit(1);
-}
-
-// Validate that --annotate has a function name argument
-if (argv.annotate && !argv._[1]) {
-  console.error("--annotate requires a function name as argument");
-  console.error("Example: profiler-cli profile.json --annotate=asm \"FunctionName\"");
-  process.exit(1);
-}
 
 // Check if this is a local profile file (.json.gz), and if so start samply
 let samplyProcess: any = null;
@@ -488,12 +394,16 @@ try {
       browser,
       actualProfileUrl,
       maxDepth,
-      argv.focusFunction || null,
-      argv.focusMarker || null
+      argv.callersOf || null,
+      argv.focusMarker || null,
+      argv.collapseFunction || null,
+      argv.focusFunction || null
     );
 
     const filters = [];
+    if (argv.collapseFunction) filters.push(`collapse: "${argv.collapseFunction}"`);
     if (argv.focusFunction) filters.push(`focus: "${argv.focusFunction}"`);
+    if (argv.callersOf) filters.push(`callers-of: "${argv.callersOf}"`);
     if (argv.focusMarker) filters.push(`marker: "${argv.focusMarker}"`);
     if (maxDepth) filters.push(`max depth: ${maxDepth}`);
     const filterText = filters.length > 0 ? ` (${filters.join(", ")})` : "";
@@ -516,13 +426,17 @@ try {
       actualProfileUrl,
       argv.calltree || 1,
       argv.detailed,
-      argv.focusFunction || null,
+      argv.callersOf || null,
       argv.focusMarker || null,
-      localPath
+      localPath,
+      argv.collapseFunction || null,
+      argv.focusFunction || null
     );
 
     const filters = [];
+    if (argv.collapseFunction) filters.push(`collapse: "${argv.collapseFunction}"`);
     if (argv.focusFunction) filters.push(`focus: "${argv.focusFunction}"`);
+    if (argv.callersOf) filters.push(`callers-of: "${argv.callersOf}"`);
     if (argv.focusMarker) filters.push(`marker: "${argv.focusMarker}"`);
     const filterText = filters.length > 0 ? ` (${filters.join(", ")})` : "";
 

@@ -15,9 +15,11 @@ export async function getCallTreeData(
   url: string,
   topN: number,
   detailed: boolean = false,
-  functionName: string | null = null,
+  callersOf: string | null = null,
   markerTransform: string | null = null,
-  localProfilePath: string | null = null
+  localProfilePath: string | null = null,
+  collapseFunction: string | null = null,
+  focusFunction: string | null = null
 ): Promise<CallTreeNode[]> {
   const page = await browser.newPage({
     bypassCSP: true,
@@ -38,10 +40,10 @@ export async function getCallTreeData(
     return selectors.profile.getSymbolicationStatus(getState()) == "DONE";
   });
 
-  await page.evaluate(() => {
+  await page.evaluate(({ invert }: { invert: boolean }) => {
     const dispatch = window.dispatch;
     const actions = window.actions;
-    dispatch(actions.changeInvertCallstack(true));
+    dispatch(actions.changeInvertCallstack(invert));
     dispatch(actions.changeSelectedTab("calltree"));
 
     const currentOptions = selectors.profile.getProfileViewOptions(getState()) || {};
@@ -51,12 +53,12 @@ export async function getCallTreeData(
         shouldMergeInlineFrames: false
       }));
     }
-  });
+  }, { invert: true });
 
   await new Promise((resolve) => setTimeout(resolve, 1000));
 
-  if (functionName !== null) {
-    const debugInfo = await page.evaluate(({ functionName }: { functionName: string }) => {
+  if (collapseFunction !== null) {
+    const collapseInfo = await page.evaluate(({ collapseFunction }: { collapseFunction: string }) => {
       const dispatch = window.dispatch;
       const actions = window.actions;
       const threadsKey = selectors.urlState.getSelectedThreadsKey(getState());
@@ -65,20 +67,128 @@ export async function getCallTreeData(
       const thread = selectors.selectedThread.getFilteredThread(state);
       const { funcTable, stringTable } = thread;
 
+      const stripGenerics = (name: string) => {
+        let result = name;
+        let prev;
+        do { prev = result; result = result.replace(/<[^<>]*>/g, ''); } while (result !== prev);
+        return result;
+      };
+      const normalizedQuery = stripGenerics(collapseFunction);
+
       let funcIndex = null;
       for (let i = 0; i < funcTable.length; i++) {
         const nameStringIndex = funcTable.name[i];
         const funcName = stringTable.getString(nameStringIndex);
-        if (funcName === functionName) {
+        if (funcName === collapseFunction) { funcIndex = i; break; }
+        if (funcIndex === null && stripGenerics(funcName) === normalizedQuery) { funcIndex = i; }
+        if (funcIndex === null && !normalizedQuery.includes('(') && stripGenerics(funcName).replace(/\(.*$/, '') === normalizedQuery) { funcIndex = i; }
+      }
+
+      if (funcIndex === null) {
+        return { error: `Function "${collapseFunction}" not found in function table` };
+      }
+
+      dispatch(actions.addTransformToStack(threadsKey, {
+        type: "collapse-function-subtree",
+        funcIndex: funcIndex,
+      }));
+
+      return {};
+    }, { collapseFunction });
+
+    if (collapseInfo.error) {
+      console.log(`Warning: ${collapseInfo.error}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  if (focusFunction !== null) {
+    const debugInfo = await page.evaluate(({ focusFunction }: { focusFunction: string }) => {
+      const dispatch = window.dispatch;
+      const actions = window.actions;
+      const threadsKey = selectors.urlState.getSelectedThreadsKey(getState());
+      const state = getState();
+
+      const thread = selectors.selectedThread.getFilteredThread(state);
+      const { funcTable, stringTable } = thread;
+
+      const stripGenerics = (name: string) => {
+        let result = name;
+        let prev;
+        do { prev = result; result = result.replace(/<[^<>]*>/g, ''); } while (result !== prev);
+        return result;
+      };
+      const normalizedQuery = stripGenerics(focusFunction);
+
+      let funcIndex = null;
+      for (let i = 0; i < funcTable.length; i++) {
+        const nameStringIndex = funcTable.name[i];
+        const funcName = stringTable.getString(nameStringIndex);
+        if (funcName === focusFunction) { funcIndex = i; break; }
+        if (funcIndex === null && stripGenerics(funcName) === normalizedQuery) { funcIndex = i; }
+        if (funcIndex === null && !normalizedQuery.includes('(') && stripGenerics(funcName).replace(/\(.*$/, '') === normalizedQuery) { funcIndex = i; }
+      }
+
+      if (funcIndex === null) {
+        return { error: `Function "${focusFunction}" not found in function table` };
+      }
+
+      dispatch(actions.addTransformToStack(threadsKey, {
+        type: "collapse-function-subtree",
+        funcIndex: funcIndex,
+      }));
+
+      return {};
+    }, { focusFunction });
+
+    if (debugInfo.error) {
+      console.log(`Warning: ${debugInfo.error}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+
+  if (callersOf !== null) {
+    const debugInfo = await page.evaluate(({ callersOf }: { callersOf: string }) => {
+      const dispatch = window.dispatch;
+      const actions = window.actions;
+      const threadsKey = selectors.urlState.getSelectedThreadsKey(getState());
+      const state = getState();
+
+      const thread = selectors.selectedThread.getFilteredThread(state);
+      const { funcTable, stringTable } = thread;
+
+      const stripGenerics = (name: string) => {
+        let result = name;
+        let prev;
+        do { prev = result; result = result.replace(/<[^<>]*>/g, ''); } while (result !== prev);
+        return result;
+      };
+      const normalizedQuery = stripGenerics(callersOf);
+
+      let funcIndex = null;
+      let matchedName = null;
+      for (let i = 0; i < funcTable.length; i++) {
+        const nameStringIndex = funcTable.name[i];
+        const funcName = stringTable.getString(nameStringIndex);
+        if (funcName === callersOf) {
           funcIndex = i;
+          matchedName = funcName;
           break;
+        }
+        if (funcIndex === null && stripGenerics(funcName) === normalizedQuery) {
+          funcIndex = i;
+          matchedName = funcName;
+        }
+        if (funcIndex === null && !normalizedQuery.includes('(') && stripGenerics(funcName).replace(/\(.*$/, '') === normalizedQuery) {
+          funcIndex = i;
+          matchedName = funcName;
         }
       }
 
       if (funcIndex === null) {
         return {
           threadsKey,
-          error: `Function "${functionName}" not found in function table`,
+          error: `Function "${callersOf}" not found in function table`,
           rootNodeCountAfterTransform: 0
         };
       }
@@ -97,11 +207,11 @@ export async function getCallTreeData(
       return {
         threadsKey,
         transforms: transforms,
-        functionName,
+        functionName: matchedName,
         funcIndex,
         rootNodeCountAfterTransform: rootNodes ? rootNodes.length : 0
       };
-    }, { functionName });
+    }, { callersOf });
 
     if (debugInfo.error) {
       console.log(`Warning: ${debugInfo.error}`);
@@ -129,12 +239,12 @@ export async function getCallTreeData(
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 
-  if (functionName === null && markerTransform === null) {
+  if (focusFunction === null && callersOf === null && markerTransform === null) {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
   const jsonString = await page.evaluate(
-    async ({ topN, detailed }: { topN: number; detailed: boolean }) => {
+    async ({ topN, detailed, focusFunctionMode, focusFunctionName }: { topN: number; detailed: boolean; focusFunctionMode: boolean; focusFunctionName: string }) => {
       const rootNodes = callTree.getRoots();
 
       if (!rootNodes || rootNodes.length === 0) {
@@ -164,6 +274,38 @@ export async function getCallTreeData(
           results.push(...childPaths);
         }
         return results;
+      }
+
+      if (focusFunctionMode) {
+        let focusNode = null;
+        for (const rootNode of rootNodes) {
+          const nodeData = callTree.getNodeData(rootNode);
+          if (nodeData && nodeData.funcName === focusFunctionName) {
+            focusNode = rootNode;
+            break;
+          }
+        }
+
+        if (focusNode === null && rootNodes.length > 0) {
+          focusNode = rootNodes[0];
+        }
+
+        if (focusNode === null) {
+          return JSON.stringify({ totalNodes: 0, topNodes: [] });
+        }
+
+        const nodeData = callTree.getNodeData(focusNode);
+        const node: any = {
+          name: nodeData.funcName,
+          selfTime: nodeData.self || 0,
+          totalTime: nodeData.total || 0,
+        };
+
+        if (detailed) {
+          node.callPaths = collectCallPaths(focusNode, []);
+        }
+
+        return JSON.stringify({ totalNodes: 1, topNodes: [node] });
       }
 
       const allNodes: any[] = [];
@@ -199,7 +341,7 @@ export async function getCallTreeData(
 
       return JSON.stringify({ totalNodes: allNodes.length, topNodes });
     },
-    { topN, detailed }
+    { topN, detailed, focusFunctionMode: focusFunction !== null, focusFunctionName: focusFunction ?? '' }
   );
 
   await page.close();
@@ -217,7 +359,7 @@ export async function getCallTreeData(
       const strings = localProfile.shared.stringArray;
 
       const inlineFuncIndices = new Set<number>();
-      for (let i = 0; i < thread.frameTable.length; i++) {
+      for (let i = 0; i < (thread.frameTable?.length ?? 0); i++) {
         const depth = thread.frameTable.inlineDepth ? (thread.frameTable.inlineDepth[i] || 0) : 0;
         if (depth > 0) {
           const funcIdx = thread.frameTable.func[i];
@@ -361,8 +503,10 @@ export async function getFlamegraphData(
   browser: Browser,
   url: string,
   maxDepth: number | null = null,
-  functionName: string | null = null,
-  markerTransform: string | null = null
+  callersOf: string | null = null,
+  markerTransform: string | null = null,
+  collapseFunction: string | null = null,
+  focusFunction: string | null = null
 ): Promise<FlameNode[]> {
   const page = await browser.newPage({
     bypassCSP: true,
@@ -392,8 +536,8 @@ export async function getFlamegraphData(
 
   await new Promise((resolve) => setTimeout(resolve, 500));
 
-  if (functionName !== null) {
-    const debugInfo = await page.evaluate(({ functionName }: { functionName: string }) => {
+  if (collapseFunction !== null) {
+    const collapseInfo = await page.evaluate(({ collapseFunction }: { collapseFunction: string }) => {
       const dispatch = window.dispatch;
       const actions = window.actions;
       const threadsKey = selectors.urlState.getSelectedThreadsKey(getState());
@@ -402,20 +546,117 @@ export async function getFlamegraphData(
       const thread = selectors.selectedThread.getFilteredThread(state);
       const { funcTable, stringTable } = thread;
 
+      const stripGenerics = (name: string) => {
+        let result = name;
+        let prev;
+        do { prev = result; result = result.replace(/<[^<>]*>/g, ''); } while (result !== prev);
+        return result;
+      };
+      const normalizedQuery = stripGenerics(collapseFunction);
+
       let funcIndex = null;
       for (let i = 0; i < funcTable.length; i++) {
         const nameStringIndex = funcTable.name[i];
         const funcName = stringTable.getString(nameStringIndex);
-        if (funcName === functionName) {
-          funcIndex = i;
-          break;
-        }
+        if (funcName === collapseFunction) { funcIndex = i; break; }
+        if (funcIndex === null && stripGenerics(funcName) === normalizedQuery) { funcIndex = i; }
+        if (funcIndex === null && !normalizedQuery.includes('(') && stripGenerics(funcName).replace(/\(.*$/, '') === normalizedQuery) { funcIndex = i; }
+      }
+
+      if (funcIndex === null) {
+        return { error: `Function "${collapseFunction}" not found in function table` };
+      }
+
+      dispatch(actions.addTransformToStack(threadsKey, {
+        type: "collapse-function-subtree",
+        funcIndex: funcIndex,
+      }));
+
+      return {};
+    }, { collapseFunction });
+
+    if (collapseInfo.error) {
+      console.log(`Warning: ${collapseInfo.error}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  if (focusFunction !== null) {
+    const debugInfo = await page.evaluate(({ focusFunction }: { focusFunction: string }) => {
+      const dispatch = window.dispatch;
+      const actions = window.actions;
+      const threadsKey = selectors.urlState.getSelectedThreadsKey(getState());
+      const state = getState();
+
+      const thread = selectors.selectedThread.getFilteredThread(state);
+      const { funcTable, stringTable } = thread;
+
+      const stripGenerics = (name: string) => {
+        let result = name;
+        let prev;
+        do { prev = result; result = result.replace(/<[^<>]*>/g, ''); } while (result !== prev);
+        return result;
+      };
+      const normalizedQuery = stripGenerics(focusFunction);
+
+      let funcIndex = null;
+      for (let i = 0; i < funcTable.length; i++) {
+        const nameStringIndex = funcTable.name[i];
+        const funcName = stringTable.getString(nameStringIndex);
+        if (funcName === focusFunction) { funcIndex = i; break; }
+        if (funcIndex === null && stripGenerics(funcName) === normalizedQuery) { funcIndex = i; }
+        if (funcIndex === null && !normalizedQuery.includes('(') && stripGenerics(funcName).replace(/\(.*$/, '') === normalizedQuery) { funcIndex = i; }
+      }
+
+      if (funcIndex === null) {
+        return { error: `Function "${focusFunction}" not found in function table` };
+      }
+
+      dispatch(actions.addTransformToStack(threadsKey, {
+        type: "collapse-function-subtree",
+        funcIndex: funcIndex,
+      }));
+
+      return {};
+    }, { focusFunction });
+
+    if (debugInfo.error) {
+      console.log(`Warning: ${debugInfo.error}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+
+  if (callersOf !== null) {
+    const debugInfo = await page.evaluate(({ callersOf }: { callersOf: string }) => {
+      const dispatch = window.dispatch;
+      const actions = window.actions;
+      const threadsKey = selectors.urlState.getSelectedThreadsKey(getState());
+      const state = getState();
+
+      const thread = selectors.selectedThread.getFilteredThread(state);
+      const { funcTable, stringTable } = thread;
+
+      const stripGenerics = (name: string) => {
+        let result = name;
+        let prev;
+        do { prev = result; result = result.replace(/<[^<>]*>/g, ''); } while (result !== prev);
+        return result;
+      };
+      const normalizedQuery = stripGenerics(callersOf);
+
+      let funcIndex = null;
+      for (let i = 0; i < funcTable.length; i++) {
+        const nameStringIndex = funcTable.name[i];
+        const funcName = stringTable.getString(nameStringIndex);
+        if (funcName === callersOf) { funcIndex = i; break; }
+        if (funcIndex === null && stripGenerics(funcName) === normalizedQuery) { funcIndex = i; }
+        if (funcIndex === null && !normalizedQuery.includes('(') && stripGenerics(funcName).replace(/\(.*$/, '') === normalizedQuery) { funcIndex = i; }
       }
 
       if (funcIndex === null) {
         return {
           threadsKey,
-          error: `Function "${functionName}" not found in function table`,
+          error: `Function "${callersOf}" not found in function table`,
           rootNodeCount: 0
         };
       }
@@ -434,11 +675,11 @@ export async function getFlamegraphData(
       return {
         threadsKey,
         transforms: transforms,
-        functionName,
+        functionName: callersOf,
         funcIndex,
         rootNodeCount: rootNodes ? rootNodes.length : 0
       };
-    }, { functionName });
+    }, { callersOf });
 
     if (debugInfo.error) {
       console.log(`Warning: ${debugInfo.error}`);
@@ -466,7 +707,7 @@ export async function getFlamegraphData(
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 
-  if (functionName === null && markerTransform === null) {
+  if (focusFunction === null && callersOf === null && markerTransform === null) {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
