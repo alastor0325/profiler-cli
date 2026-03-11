@@ -13,7 +13,9 @@
   },
   "scripts": {
     "build": "tsc",
-    "start": "tsc && node dist/index.js"
+    "start": "tsc && node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@types/node": "22",
@@ -21,6 +23,7 @@
     "@typescript-eslint/eslint-plugin": "8",
     "@typescript-eslint/parser": "8",
     "eslint": "9",
-    "typescript": "5.7"
+    "typescript": "5.7",
+    "vitest": "^4.0.18"
   }
 }
