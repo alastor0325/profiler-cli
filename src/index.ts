@@ -68,6 +68,10 @@ const argv = (await yargsInstance
     type: "boolean",
     default: false,
   })
+  .option("samply-path", {
+    describe: "Path to samply binary (default: use samply from PATH)",
+    type: "string",
+  })
   .help().argv) as any;
 
 if (argv.ai) {
@@ -342,7 +346,12 @@ if (existsSync(profileUrl) && profileUrl.endsWith('.json.gz')) {
   console.log(`Starting samply from directory: ${profileDir}`);
   console.log(`Loading profile: ${profileBasename}`);
 
-  samplyProcess = spawn("samply", ["load", profileBasename, "--no-open", "--port", String(PORT)], {
+  const samplyBinary = argv.samplyPath || "samply";
+  if (argv.samplyPath) {
+    console.log(`Using samply: ${argv.samplyPath}`);
+  }
+
+  samplyProcess = spawn(samplyBinary, ["load", profileBasename, "--no-open", "--port", String(PORT)], {
     cwd: profileDir,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -501,13 +510,15 @@ try {
       }
     }
   } else if (argv.calltree) {
+    const localPath = (existsSync(profileUrl) && profileUrl.endsWith('.json.gz')) ? profileUrl : null;
     const callTreeData = await getCallTreeData(
       browser,
       actualProfileUrl,
       argv.calltree || 1,
       argv.detailed,
       argv.focusFunction || null,
-      argv.focusMarker || null
+      argv.focusMarker || null,
+      localPath
     );
 
     const filters = [];
@@ -539,9 +550,7 @@ try {
           const percentage = ((path.samples / node.selfTime) * 100).toFixed(1);
           console.log(`   Call path #${j + 1} - ${path.samples} samples (${percentage}% of this function):`);
 
-          // Reverse stack so root is at bottom (traditional view)
-          const reversedStack = [...path.stack].reverse();
-          for (const frame of reversedStack) {
+          for (const frame of path.stack) {
             console.log(`     ${frame}`);
           }
           console.log();

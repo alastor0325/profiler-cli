@@ -1,5 +1,6 @@
 import { Browser } from "playwright";
 import { CallTreeNode, MarkerSummary, FlameNode, PageLoadSummary, NetworkResourceSummary } from "./types.js";
+import { parseProfileFile } from "./profile-parser.js";
 
 declare const window: any;
 declare const selectors: any;
@@ -15,7 +16,8 @@ export async function getCallTreeData(
   topN: number,
   detailed: boolean = false,
   functionName: string | null = null,
-  markerTransform: string | null = null
+  markerTransform: string | null = null,
+  localProfilePath: string | null = null
 ): Promise<CallTreeNode[]> {
   const page = await browser.newPage({
     bypassCSP: true,
@@ -41,9 +43,17 @@ export async function getCallTreeData(
     const actions = window.actions;
     dispatch(actions.changeInvertCallstack(true));
     dispatch(actions.changeSelectedTab("calltree"));
+
+    const currentOptions = selectors.profile.getProfileViewOptions(getState()) || {};
+    if (typeof actions.updateProfileViewOptions === 'function') {
+      dispatch(actions.updateProfileViewOptions({
+        ...currentOptions,
+        shouldMergeInlineFrames: false
+      }));
+    }
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await new Promise((resolve) => setTimeout(resolve, 1000));
 
   if (functionName !== null) {
     const debugInfo = await page.evaluate(({ functionName }: { functionName: string }) => {
@@ -199,11 +209,56 @@ export async function getCallTreeData(
   }
 
   const result = JSON.parse(jsonString);
+
+  if (localProfilePath && detailed) {
+    try {
+      const localProfile = parseProfileFile(localProfilePath);
+      const thread = localProfile.threads[0];
+      const strings = localProfile.shared.stringArray;
+
+      const inlineFuncIndices = new Set<number>();
+      for (let i = 0; i < thread.frameTable.length; i++) {
+        const depth = thread.frameTable.inlineDepth ? (thread.frameTable.inlineDepth[i] || 0) : 0;
+        if (depth > 0) {
+          const funcIdx = thread.frameTable.func[i];
+          inlineFuncIndices.add(funcIdx);
+        }
+      }
+
+      const inlineFuncNames = new Set<string>();
+      for (const funcIdx of inlineFuncIndices) {
+        const nameIdx = thread.funcTable.name[funcIdx];
+        const funcName = strings[nameIdx];
+        if (funcName) {
+          inlineFuncNames.add(funcName);
+        }
+      }
+
+      for (const node of result.topNodes) {
+        if (inlineFuncNames.has(node.name)) {
+          node.name = `(inl) ${node.name}`;
+        }
+
+        if (node.callPaths) {
+          for (const callPath of node.callPaths) {
+            for (let i = 0; i < callPath.stack.length; i++) {
+              if (inlineFuncNames.has(callPath.stack[i])) {
+                callPath.stack[i] = `(inl) ${callPath.stack[i]}`;
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Failed to add inline frame markers:', e);
+    }
+  }
+
   if (result.debug) {
     console.log("Debug info:", JSON.stringify(result.debug, null, 2));
   }
   if (result.totalNodes > 0) {
-    console.log(`Collected ${result.totalNodes} total nodes`);
+    console.log(`\nCollected ${result.totalNodes} total nodes`);
   }
   return result.topNodes;
 }
