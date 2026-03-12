@@ -113,6 +113,18 @@ describe("--calltree", () => {
       expect(stdout).toContain("5. cssparser::parser::Parser::next - 19 samples (19 total)");
     }, 120_000);
 
+    it("returns top 5 functions filtered by callers-of and focus-marker", async () => {
+      const { stdout } = await runCli([PROFILE, "--calltree", "5", "--callers-of", "style::properties::cascade::cascade_rules", "--focus-marker=-async,-sync"]);
+
+      expect(stdout).toContain("Collected 105 total nodes");
+      expect(stdout).toContain('Top 5 functions by self time (callers-of: "style::properties::cascade::cascade_rules", marker: "-async,-sync"):');
+      expect(stdout).toContain("1. style::properties::cascade::cascade_rules - 81 samples (81 total)");
+      expect(stdout).toContain("2. style::properties::generated::StyleBuilder::build - 45 samples (45 total)");
+      expect(stdout).toContain("3. style::properties::cascade::Cascade::apply_non_prioritary_properties - 39 samples (39 total)");
+      expect(stdout).toContain("4. malloc - 28 samples (28 total)");
+      expect(stdout).toContain("5. style::custom_properties::do_substitute_chunk - 16 samples (16 total)");
+    }, 120_000);
+
     it("matches callers-of with generic type parameters stripped", async () => {
       const { stdout } = await runCli([PROFILE, "--calltree", "5", "--focus-marker=-async,-sync", "--callers-of", "servo_arc::Arc::drop_slow"]);
 
@@ -160,6 +172,22 @@ describe("--calltree", () => {
       expect(stdout).toContain("   style::parallel::style_trees");
       expect(stdout).toContain("   geckoservo::glue::traverse_subtree");
       expect(stdout).toContain("   start");
+    }, 120_000);
+
+    it("returns top 3 functions with call paths in --detailed mode", async () => {
+      const { stdout } = await runCli([PROFILE, "--calltree", "3", "--detailed"]);
+
+      expect(stdout).toContain("Collected 2197 total nodes");
+      expect(stdout).toContain("Top 3 functions by self time:");
+      expect(stdout).toContain("1. __psynch_cvwait - 12641 samples (12641 total)");
+      expect(stdout).toContain("Call path #1 - 11440 samples (90.5% of this function):");
+      expect(stdout).toContain("   __psynch_cvwait");
+      expect(stdout).toContain("   _pthread_cond_wait");
+      expect(stdout).toContain("   mozilla::detail::ConditionVariableImpl::wait(mozilla::detail::MutexImpl&)");
+      expect(stdout).toContain("   mozilla::TaskController::GetRunnableForMTTask(bool)");
+      expect(stdout).toContain("   start");
+      expect(stdout).toContain("2. free - 195 samples (195 total)");
+      expect(stdout).toContain("3. _platform_memmove - 186 samples (186 total)");
     }, 120_000);
 
     it("returns top 10 functions by self time", async () => {
